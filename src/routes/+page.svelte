@@ -12,6 +12,10 @@
 	let dragActive = $state(false);
 	let hydrated = $state(false);
 	let viewMode = $state<'before' | 'after'>('after');
+	let wipeMode = $state(false);
+	let holdingToCompare = $state(false);
+	let holdStartedAt = 0;
+	let suppressEyeClick = false;
 	let visibleLuts = $derived(app.supportedLuts.filter((lut) => (lut.title ?? lut.name).toLowerCase().includes(query.trim().toLowerCase())));
 	let activeLut = $derived(app.supportedLuts.find((lut) => lut.path === app.state.selectedLutPath) ?? null);
 	let displayedImageUrl = $derived(
@@ -75,6 +79,49 @@
 		viewMode = app.state.selectedImage?.kind === 'native' ? 'after' : 'before';
 		app.selectLut(path);
 	}
+	function toggleWipe() {
+		wipeMode = !wipeMode;
+		viewMode = 'after';
+	}
+	function eyePointerDown(event: PointerEvent) {
+		if (event.altKey) {
+			event.preventDefault();
+			toggleWipe();
+			suppressEyeClick = true;
+			return;
+		}
+		if (wipeMode || viewMode !== 'after') return;
+		holdStartedAt = performance.now();
+		holdingToCompare = true;
+		viewMode = 'before';
+		(event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+	}
+	function eyePointerUp() {
+		if (!holdingToCompare) return;
+		suppressEyeClick = performance.now() - holdStartedAt > 180;
+		holdingToCompare = false;
+		viewMode = 'after';
+	}
+	function eyeClick(event: MouseEvent) {
+		if (suppressEyeClick) {
+			suppressEyeClick = false;
+			return;
+		}
+		if (event.altKey) {
+			toggleWipe();
+			return;
+		}
+		if (wipeMode) {
+			wipeMode = false;
+			return;
+		}
+		viewMode = viewMode === 'after' ? 'before' : 'after';
+	}
+	function cancelEyeHold() {
+		if (!holdingToCompare) return;
+		holdingToCompare = false;
+		viewMode = 'after';
+	}
 	function imageName() {
 		const image = app.state.selectedImage;
 		if (!image) return 'No image selected';
@@ -137,17 +184,48 @@
 			<div class="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-5">
 				{#if app.state.selectedImage}
 					<div class="relative flex size-full items-center justify-center overflow-hidden rounded-box border border-base-300 bg-base-100">
-						<img src={displayedImageUrl} alt={`${viewMode === 'after' ? 'After' : 'Before'} preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
-						<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{viewMode === 'before' ? 'Before · original' : activeLut ? `After · ${lutLabel(activeLut)}` : 'Original'}</span>{#if activeLut && viewMode === 'after'}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round(app.state.intensity * 100)}%</span>{/if}</div>
+						{#if wipeMode && app.state.previewUrl}
+							<!-- svelte-ignore a11y_no_noninteractive_tabindex (required by DaisyUI diff keyboard interaction) -->
+							<figure class="diff size-full bg-base-100" tabindex="0" aria-label="Draggable before and after comparison">
+								<!-- svelte-ignore a11y_no_noninteractive_tabindex (required by DaisyUI diff keyboard interaction) -->
+								<div class="diff-item-1 bg-base-100" role="img" tabindex="0" aria-label={`Before, original ${imageName()}`}>
+									<img src={app.state.selectedImage.previewUrl} alt="" style="object-fit: contain" />
+								</div>
+								<div class="diff-item-2 bg-base-100" role="img" aria-label={`After preview of ${imageName()}`}>
+									<img src={app.state.previewUrl} alt="" style="object-fit: contain" />
+								</div>
+								<div class="diff-resizer"></div>
+							</figure>
+							<div class="pointer-events-none absolute left-3 top-3 z-10"><span class="badge badge-neutral badge-sm">Before · original</span></div>
+							<div class="pointer-events-none absolute right-3 top-3 z-10"><span class="badge badge-neutral badge-sm">After · {activeLut ? lutLabel(activeLut) : 'graded'}</span></div>
+						{:else}
+							<img src={displayedImageUrl} alt={`${viewMode === 'after' ? 'After' : 'Before'} preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
+							<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{viewMode === 'before' ? 'Before · original' : activeLut ? `After · ${lutLabel(activeLut)}` : 'Original'}</span>{#if activeLut && viewMode === 'after'}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round(app.state.intensity * 100)}%</span>{/if}</div>
+						{/if}
 						{#if app.state.previewPhase === 'rendering' && viewMode === 'after'}
 							<div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-200/35"><span class="badge badge-neutral gap-2"><span class="loading loading-spinner loading-xs"></span>Rendering preview</span></div>
 						{/if}
 						{#if app.state.previewError && viewMode === 'after'}
 							<div role="alert" class="alert alert-error alert-soft absolute bottom-16 left-1/2 w-auto max-w-[80%] -translate-x-1/2 py-2 text-xs"><span>{app.state.previewError}</span></div>
 						{/if}
-						<div class="join absolute bottom-3 left-1/2 -translate-x-1/2 border border-base-300 bg-base-100 p-1">
-							<button class="btn btn-sm join-item" class:btn-active={viewMode === 'before'} aria-pressed={viewMode === 'before'} onclick={() => (viewMode = 'before')}>Before</button>
-							<button class="btn btn-sm join-item" class:btn-active={viewMode === 'after'} aria-pressed={viewMode === 'after'} disabled={!activeLut || app.state.selectedImage?.kind !== 'native'} onclick={() => (viewMode = 'after')}>After</button>
+						<div class="tooltip tooltip-bottom absolute left-1/2 top-3 z-20 -translate-x-1/2" data-tip="Click toggles · Hold for before · ⌥-click for slider">
+							<button
+								class="btn btn-circle btn-neutral border-base-300"
+								class:btn-active={wipeMode || viewMode === 'after'}
+								aria-label={wipeMode ? 'Exit before and after slider' : viewMode === 'after' ? 'Hide the LUT preview' : 'Show the LUT preview'}
+								aria-pressed={wipeMode || viewMode === 'after'}
+								disabled={!activeLut || app.state.selectedImage?.kind !== 'native'}
+								onpointerdown={eyePointerDown}
+								onpointerup={eyePointerUp}
+								onpointercancel={cancelEyeHold}
+								onclick={eyeClick}
+							>
+								{#if viewMode === 'before' && !wipeMode}
+									<svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 3l18 18M10.6 10.7a2 2 0 0 0 2.7 2.7M9.9 4.3A10.6 10.6 0 0 1 12 4c5.5 0 9 5 9 5a16 16 0 0 1-2.1 2.5M6.6 6.7C4.4 8.2 3 10 3 10s3.5 5 9 5a10 10 0 0 0 3.2-.5"/></svg>
+								{:else}
+									<svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 12s3.5-5 9-5 9 5 9 5-3.5 5-9 5-9-5-9-5Z"/><circle cx="12" cy="12" r="2.5"/>{#if wipeMode}<path d="M12 5v14"/>{/if}</svg>
+								{/if}
+							</button>
 						</div>
 					</div>
 				{:else}
