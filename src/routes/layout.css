@@ -1,4 +1,87 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-    themes: dark --default;
+    themes: false;
+    logs: false;
+}
+
+@plugin "daisyui/theme" {
+    name: "luty";
+    default: true;
+    prefersdark: true;
+    color-scheme: dark;
+    --color-base-100: oklch(15% 0.012 255);
+    --color-base-200: oklch(12% 0.012 255);
+    --color-base-300: oklch(21% 0.014 255);
+    --color-base-content: oklch(93% 0.008 250);
+    --color-primary: oklch(79% 0.13 76);
+    --color-primary-content: oklch(18% 0.03 72);
+    --color-secondary: oklch(67% 0.11 252);
+    --color-secondary-content: oklch(96% 0.01 250);
+    --color-accent: oklch(74% 0.13 69);
+    --color-accent-content: oklch(18% 0.03 69);
+    --color-neutral: oklch(27% 0.014 255);
+    --color-neutral-content: oklch(92% 0.008 250);
+    --color-info: oklch(72% 0.1 236);
+    --color-info-content: oklch(16% 0.03 236);
+    --color-success: oklch(72% 0.13 158);
+    --color-success-content: oklch(15% 0.025 158);
+    --color-warning: oklch(80% 0.13 82);
+    --color-warning-content: oklch(20% 0.035 82);
+    --color-error: oklch(66% 0.18 25);
+    --color-error-content: oklch(97% 0.01 25);
+    --radius-selector: 0.5rem;
+    --radius-field: 0.5rem;
+    --radius-box: 0.75rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 0;
+    --noise: 0;
+}
+
+:root {
+    font-family: "Avenir Next", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    font-synthesis: none;
+    color-scheme: dark;
+    background: var(--color-base-200);
+}
+
+html,
+body {
+    min-width: 320px;
+    min-height: 100%;
+    overflow: hidden;
+    background: var(--color-base-200);
+}
+
+body {
+    margin: 0;
+}
+
+button,
+input {
+    font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+::selection {
+    color: var(--color-primary-content);
+    background: var(--color-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
 }

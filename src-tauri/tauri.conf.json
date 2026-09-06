@@ -12,13 +12,20 @@
   "app": {
     "windows": [
       {
-        "title": "luty",
-        "width": 800,
-        "height": 600
+        "title": "Luty",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 560,
+        "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/**"]
+      }
     }
   },
   "bundle": {

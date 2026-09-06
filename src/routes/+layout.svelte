@@ -1,8 +1,7 @@
 <script lang="ts">
-    import type { PageProps } from "./$types";
     import "./layout.css";
 
-    const { children }: PageProps = $props();
+	let { children } = $props();
 </script>
 
 {@render children()}
