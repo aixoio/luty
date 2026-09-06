@@ -23,6 +23,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
 image = { version = "0.25", default-features = false, features = ["avif", "bmp", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
 rayon = "1"
 walkdir = "2"

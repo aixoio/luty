@@ -116,7 +116,8 @@ fn list_luts(state: State<'_, AppState>) -> Result<LutCatalog, String> {
 }
 
 #[tauri::command]
-fn choose_image(app: AppHandle) -> Option<String> {
+async fn choose_image(app: AppHandle) -> Result<Option<String>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
         .add_filter(
@@ -125,29 +126,45 @@ fn choose_image(app: AppHandle) -> Option<String> {
                 "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "qoi", "tga",
             ],
         )
-        .blocking_pick_file()
-        .and_then(|path| path.into_path().ok())
-        .map(|path| path.to_string_lossy().into_owned())
+        .pick_file(move |path| {
+            let _ = sender.send(dialog_path_to_string(path));
+        });
+    receiver
+        .await
+        .map_err(|_| "The image picker closed unexpectedly".to_string())
 }
 
 #[tauri::command]
-fn choose_lut_directory(app: AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .blocking_pick_folder()
-        .and_then(|path| path.into_path().ok())
-        .map(|path| path.to_string_lossy().into_owned())
+async fn choose_lut_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = sender.send(dialog_path_to_string(path));
+    });
+    receiver
+        .await
+        .map_err(|_| "The folder picker closed unexpectedly".to_string())
 }
 
 #[tauri::command]
-fn choose_output_path(app: AppHandle, suggested_name: Option<String>) -> Option<String> {
+async fn choose_output_path(
+    app: AppHandle,
+    suggested_name: Option<String>,
+) -> Result<Option<String>, String> {
     let mut dialog = app.dialog().file().add_filter("PNG image", &["png"]);
     if let Some(name) = suggested_name.filter(|name| !name.trim().is_empty()) {
         dialog = dialog.set_file_name(name);
     }
-    dialog
-        .blocking_save_file()
-        .and_then(|path| path.into_path().ok())
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    dialog.save_file(move |path| {
+        let _ = sender.send(dialog_path_to_string(path));
+    });
+    receiver
+        .await
+        .map_err(|_| "The export picker closed unexpectedly".to_string())
+}
+
+fn dialog_path_to_string(path: Option<tauri_plugin_dialog::FilePath>) -> Option<String> {
+    path.and_then(|path| path.into_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
 }
 
