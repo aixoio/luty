@@ -11,6 +11,7 @@
 	let query = $state('');
 	let dragActive = $state(false);
 	let hydrated = $state(false);
+	let workspaceMode = $state<'single' | 'grid'>('single');
 	let viewMode = $state<'before' | 'after'>('after');
 	let wipeMode = $state(false);
 	let holdingToCompare = $state(false);
@@ -89,6 +90,10 @@
 		wipeMode = false;
 		viewMode = app.state.images[index]?.kind === 'native' ? 'after' : 'before';
 		app.selectImage(index);
+	}
+	function openImage(index: number) {
+		selectImage(index);
+		workspaceMode = 'single';
 	}
 	function selectRelativeImage(offset: number) {
 		const total = app.state.images.length;
@@ -203,11 +208,15 @@
 				{#if app.state.images.length}
 					<ul class="list min-h-0 flex-1 overflow-y-auto p-2" aria-label="Loaded images">
 						{#each app.state.images as image, index (image.previewUrl)}
-							<li class="list-row gap-2 p-2" class:bg-base-200={index === app.state.activeImageIndex}>
-								<img src={image.previewUrl} alt="" class="size-9 rounded-field object-cover" />
+							<li class="list-row gap-2 border border-transparent p-2" class:border-primary={index === app.state.activeImageIndex} class:bg-base-200={index === app.state.activeImageIndex}>
+								<img src={image.previewUrl} alt="" class="size-9 rounded-field object-cover" class:ring-2={index === app.state.activeImageIndex} class:ring-primary={index === app.state.activeImageIndex} />
 								<button class="min-w-0 text-left" aria-current={index === app.state.activeImageIndex ? 'true' : undefined} onclick={() => selectImage(index)}>
 									<span class="block truncate text-xs font-medium">{imageName(image)}</span>
-									<span class="mt-0.5 block font-mono text-[10px] tabular-nums text-base-content/40">{imageDimensions(image)}</span>
+									{#if index === app.state.activeImageIndex}
+										<span class="mt-0.5 flex items-center gap-1 text-[10px] font-medium text-primary"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>Selected</span>
+									{:else}
+										<span class="mt-0.5 block font-mono text-[10px] tabular-nums text-base-content/40">{imageDimensions(image)}</span>
+									{/if}
 								</button>
 								<button class="btn btn-ghost btn-square btn-xs opacity-55 hover:opacity-100" aria-label={`Remove ${imageName(image)}`} onclick={(event) => removeImage(event, index)}>×</button>
 							</li>
@@ -225,8 +234,47 @@
 		</aside>
 
 		<section class="relative flex min-h-0 flex-col bg-base-200">
+			<div class="flex h-11 shrink-0 items-center justify-between border-b border-base-300 bg-base-100 px-3 sm:px-4">
+				<div role="tablist" class="tabs tabs-box tabs-sm" aria-label="Workspace view">
+					<button role="tab" class="tab gap-1.5" class:tab-active={workspaceMode === 'single'} aria-selected={workspaceMode === 'single'} onclick={() => (workspaceMode = 'single')}>
+						<svg viewBox="0 0 20 20" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="2"/><path d="m4.5 14 4-4 3 3 2-2 2 2"/></svg>Single
+					</button>
+					<button role="tab" class="tab gap-1.5" class:tab-active={workspaceMode === 'grid'} aria-selected={workspaceMode === 'grid'} onclick={() => (workspaceMode = 'grid')}>
+						<svg viewBox="0 0 20 20" class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="12" y="3" width="5" height="5" rx="1"/><rect x="3" y="12" width="5" height="5" rx="1"/><rect x="12" y="12" width="5" height="5" rx="1"/></svg>Grid
+					</button>
+				</div>
+				<span class="text-xs text-base-content/45">{workspaceMode === 'grid' ? `${app.state.images.length} images` : imageName()}</span>
+			</div>
 			<div class="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-5">
-				{#if app.activeImage}
+				{#if app.state.images.length && workspaceMode === 'grid'}
+					<div class="size-full overflow-y-auto rounded-box border border-base-300 bg-base-100 p-3 sm:p-4">
+						<div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5" role="listbox" aria-label="Loaded image grid">
+							{#each app.state.images as image, index (image.previewUrl)}
+								<button
+									class="card card-sm card-border group overflow-hidden bg-base-200 text-left transition-colors"
+									class:border-primary={index === app.state.activeImageIndex}
+									class:ring-2={index === app.state.activeImageIndex}
+									class:ring-primary={index === app.state.activeImageIndex}
+									role="option"
+									aria-selected={index === app.state.activeImageIndex}
+									onclick={() => selectImage(index)}
+									ondblclick={() => openImage(index)}
+								>
+									<figure class="relative aspect-4/3 overflow-hidden bg-base-300">
+										<img src={image.previewUrl} alt={imageName(image)} class="size-full object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
+										{#if index === app.state.activeImageIndex}
+											<span class="badge badge-primary badge-sm absolute left-2 top-2 gap-1"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>Selected</span>
+										{/if}
+									</figure>
+									<div class="card-body gap-1 p-3">
+										<h2 class="card-title block truncate text-sm">{imageName(image)}</h2>
+										<p class="font-mono text-[10px] tabular-nums text-base-content/45">{imageDimensions(image)}</p>
+									</div>
+								</button>
+							{/each}
+						</div>
+					</div>
+				{:else if app.activeImage}
 					<div class="relative flex size-full items-center justify-center overflow-hidden rounded-box border border-base-300 bg-base-100">
 						{#if wipeMode && app.state.previewUrl}
 							<!-- svelte-ignore a11y_no_noninteractive_tabindex (required by DaisyUI diff keyboard interaction) -->
@@ -279,7 +327,7 @@
 					</button>
 				{/if}
 			</div>
-			<div class="flex h-12 shrink-0 items-center justify-between border-t border-base-300 bg-base-100 px-3 text-xs sm:px-4"><div class="flex items-center gap-2 text-base-content/50"><span class="status" class:status-success={app.activeImage !== null}></span><span>{app.activeImage ? imageDimensions() : 'Waiting for images'}</span></div><span class="font-mono tabular-nums text-base-content/45">{app.state.images.length > 1 ? `${app.state.images.length} images` : 'Fit · 100%'}</span></div>
+			<div class="flex h-12 shrink-0 items-center justify-between border-t border-base-300 bg-base-100 px-3 text-xs sm:px-4"><div class="flex items-center gap-2 text-base-content/50"><span class="status" class:status-success={app.activeImage !== null}></span><span>{app.activeImage ? imageDimensions() : 'Waiting for images'}</span></div><span class="font-mono tabular-nums text-base-content/45">{workspaceMode === 'grid' ? `Grid · ${app.state.images.length}` : 'Fit · 100%'}</span></div>
 		</section>
 
 		<aside class="flex min-h-0 flex-col border-l border-base-300 bg-base-100 max-lg:absolute max-lg:bottom-12 max-lg:right-0 max-lg:top-13 max-lg:z-10 max-lg:w-[272px] max-lg:translate-x-[calc(100%-44px)] max-lg:shadow-2xl max-lg:transition-transform max-lg:hover:translate-x-0">
