@@ -3,6 +3,7 @@ export const IMAGE_EXTENSIONS = [
 	'avif',
 	'bmp',
 	'gif',
+	'hdr',
 	'jpeg',
 	'jpg',
 	'png',

@@ -124,19 +124,20 @@ export class AppContext {
 		return this.chooseNativeImages();
 	}
 
-	selectBrowserImages(files: File[]) {
+	async selectBrowserImages(files: File[]) {
 		if (!files.length) return;
 		this.clearPreview();
 		const previous = this.state.images;
-		this.state.images = selectBrowserImages(files);
-		this.state.activeImageIndex = 0;
-		Object.assign(this.state, emptyExportState());
-		this.state.error = null;
+		await this.run(() => selectBrowserImages(files), (images) => ({
+			images,
+			activeImageIndex: 0,
+			...emptyExportState()
+		}));
 		releaseImagePreviews(previous);
 	}
 
-	selectBrowserImage(file: File) {
-		this.selectBrowserImages([file]);
+	async selectBrowserImage(file: File) {
+		await this.selectBrowserImages([file]);
 	}
 
 	selectImage(index: number) {

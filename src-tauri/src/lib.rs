@@ -131,7 +131,8 @@ async fn choose_image(app: AppHandle) -> Result<Option<String>, String> {
         .add_filter(
             "Images",
             &[
-                "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "qoi", "tga",
+                "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "hdr", "qoi",
+                "tga",
             ],
         )
         .pick_file(move |path| {
@@ -150,7 +151,8 @@ async fn choose_images(app: AppHandle) -> Result<Vec<String>, String> {
         .add_filter(
             "Images",
             &[
-                "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "qoi", "tga",
+                "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "hdr", "qoi",
+                "tga",
             ],
         )
         .pick_files(move |paths| {
@@ -326,6 +328,23 @@ async fn render_preview(
     .map_err(|error| format!("Preview task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn render_source_preview(
+    app: AppHandle,
+    input_path: String,
+) -> Result<ProcessImageResult, String> {
+    let cache_directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not locate preview cache: {error}"))?
+        .join("previews");
+    tauri::async_runtime::spawn_blocking(move || {
+        render_source_preview_blocking(Path::new(&input_path), &cache_directory)
+    })
+    .await
+    .map_err(|error| format!("Source preview task failed: {error}"))?
+}
+
 #[cfg(test)]
 fn process_image_blocking(
     state: &AppState,
@@ -363,7 +382,7 @@ fn process_image_blocking_with_progress(
         "Unsupported output extension. Use PNG, JPEG, WebP, AVIF, TIFF, BMP, QOI, or TGA."
             .to_string()
     })?;
-    send_optional_progress(progress, "Decoding image", 18);
+    send_optional_progress(progress, "Decoding to SDR", 18);
     let image = decode_image(input_path)?;
     let (width, height) = (image.width(), image.height());
     send_optional_progress(progress, "Applying LUT", 38);
@@ -420,7 +439,7 @@ fn render_preview_blocking(
         .map_err(|error| format!("Could not inspect LUT '{}': {error}", lut_path.display()))?;
     let mut hasher = DefaultHasher::new();
     // Invalidate previews made before decode-time orientation normalization.
-    2_u8.hash(&mut hasher);
+    3_u8.hash(&mut hasher);
     input_path.hash(&mut hasher);
     lut_path.hash(&mut hasher);
     intensity.to_bits().hash(&mut hasher);
@@ -453,12 +472,8 @@ fn render_preview_blocking(
         });
     }
 
-    let image = decode_image(input_path)?;
-    let image = if image.width() > 1600 || image.height() > 1600 {
-        image.thumbnail(1600, 1600)
-    } else {
-        image
-    };
+    let source_preview = render_source_preview_blocking(input_path, cache_directory)?;
+    let image = decode_image(Path::new(&source_preview.output_path))?;
     let (width, height) = (image.width(), image.height());
     let pixels = apply_lut(image, &lut, intensity);
     DynamicImage::ImageRgba8(pixels)
@@ -472,11 +487,66 @@ fn render_preview_blocking(
     })
 }
 
+fn render_source_preview_blocking(
+    input_path: &Path,
+    cache_directory: &Path,
+) -> Result<ProcessImageResult, String> {
+    let started = Instant::now();
+    let metadata = fs::metadata(input_path).map_err(|error| {
+        format!(
+            "Could not inspect image '{}': {error}",
+            input_path.display()
+        )
+    })?;
+    let mut hasher = DefaultHasher::new();
+    "sdr-source-preview-v1".hash(&mut hasher);
+    input_path.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .hash(&mut hasher);
+    fs::create_dir_all(cache_directory)
+        .map_err(|error| format!("Could not create preview cache: {error}"))?;
+    let output_path = cache_directory.join(format!("source-{:016x}.png", hasher.finish()));
+
+    if output_path.is_file() {
+        let (width, height) = image::image_dimensions(&output_path)
+            .map_err(|error| format!("Could not inspect cached source preview: {error}"))?;
+        return Ok(ProcessImageResult {
+            output_path: output_path.to_string_lossy().into_owned(),
+            width,
+            height,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
+
+    let image = decode_image(input_path)?;
+    let image = if image.width() > 1600 || image.height() > 1600 {
+        image.thumbnail(1600, 1600)
+    } else {
+        image
+    };
+    let (width, height) = (image.width(), image.height());
+    image
+        .save_with_format(&output_path, ImageFormat::Png)
+        .map_err(|error| format!("Could not write source preview: {error}"))?;
+    Ok(ProcessImageResult {
+        output_path: output_path.to_string_lossy().into_owned(),
+        width,
+        height,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
 fn decode_image(path: &Path) -> Result<DynamicImage, String> {
     let reader = ImageReader::open(path)
         .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
         .with_guessed_format()
         .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?;
+    let format = reader.format();
     let mut decoder = reader
         .into_decoder()
         .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
@@ -484,7 +554,64 @@ fn decode_image(path: &Path) -> Result<DynamicImage, String> {
     let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
     image.apply_orientation(orientation);
-    Ok(image)
+    Ok(DynamicImage::ImageRgba8(convert_to_sdr(image, format)))
+}
+
+fn convert_to_sdr(image: DynamicImage, format: Option<ImageFormat>) -> image::RgbaImage {
+    let is_scene_linear_hdr = matches!(
+        &image,
+        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+    ) || matches!(format, Some(ImageFormat::Hdr | ImageFormat::OpenExr));
+    if !is_scene_linear_hdr {
+        return image.into_rgba8();
+    }
+
+    let (width, height) = (image.width(), image.height());
+    let source = image.into_rgba32f().into_raw();
+    let mut output = vec![0_u8; source.len()];
+    output
+        .par_chunks_exact_mut(4)
+        .zip(source.par_chunks_exact(4))
+        .for_each(|(target, pixel)| {
+            let red = finite_positive(pixel[0]);
+            let green = finite_positive(pixel[1]);
+            let blue = finite_positive(pixel[2]);
+            let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+            let mapped_luminance = aces_filmic(luminance);
+            let scale = if luminance > f32::EPSILON {
+                mapped_luminance / luminance
+            } else {
+                0.0
+            };
+            target[0] = linear_to_srgb_u8(red * scale);
+            target[1] = linear_to_srgb_u8(green * scale);
+            target[2] = linear_to_srgb_u8(blue * scale);
+            target[3] = (finite_positive(pixel[3]).clamp(0.0, 1.0) * 255.0).round() as u8;
+        });
+    image::RgbaImage::from_raw(width, height, output)
+        .expect("RGBA conversion preserves image dimensions")
+}
+
+fn finite_positive(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn aces_filmic(value: f32) -> f32 {
+    ((value * (2.51 * value + 0.03)) / (value * (2.43 * value + 0.59) + 0.14)).clamp(0.0, 1.0)
+}
+
+fn linear_to_srgb_u8(value: f32) -> u8 {
+    let value = value.clamp(0.0, 1.0);
+    let encoded = if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
 }
 
 fn apply_lut(image: DynamicImage, lut: &CubeLut, intensity: f32) -> image::RgbaImage {
@@ -642,7 +769,8 @@ pub fn run() {
             available_output_paths,
             inspect_image,
             process_image,
-            render_preview
+            render_preview,
+            render_source_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -651,8 +779,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{codecs::jpeg::JpegEncoder, ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
+    use image::{
+        codecs::jpeg::JpegEncoder, ImageEncoder, Rgb, RgbImage, Rgba, Rgba32FImage, RgbaImage,
+    };
     use std::time::UNIX_EPOCH;
+
+    #[test]
+    fn tone_maps_float_hdr_into_sdr_rgba8() {
+        let source = Rgba32FImage::from_pixel(1, 1, Rgba([4.0, 4.0, 4.0, 0.5]));
+        let output = convert_to_sdr(DynamicImage::ImageRgba32F(source), Some(ImageFormat::Hdr));
+        let pixel = output.get_pixel(0, 0).0;
+        assert!(pixel[0] > 240 && pixel[0] < 255);
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
+        assert_eq!(pixel[3], 128);
+    }
 
     #[test]
     fn normalizes_exif_orientation_while_decoding() {

@@ -60,7 +60,9 @@ export const api = {
 		return call<ProcessImageResult>('process_image', { request, progress });
 	},
 	renderPreview: (inputPath: string, lutPath: string, intensity: number) =>
-		call<ProcessImageResult>('render_preview', { inputPath, lutPath, intensity })
+		call<ProcessImageResult>('render_preview', { inputPath, lutPath, intensity }),
+	renderSourcePreview: (inputPath: string) =>
+		call<ProcessImageResult>('render_source_preview', { inputPath })
 };
 
 export async function nativeFileUrl(path: string): Promise<string> {

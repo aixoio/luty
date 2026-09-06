@@ -54,10 +54,10 @@
 		try { await app.chooseNativeImages(); } catch { /* rendered by context */ }
 	}
 
-	function onBrowserFiles(event: Event) {
+	async function onBrowserFiles(event: Event) {
 		const files = Array.from((event.currentTarget as HTMLInputElement).files ?? []);
 		if (!files.length) return;
-		try { app.selectBrowserImages(files); } catch { /* constrained picker */ }
+		try { await app.selectBrowserImages(files); } catch { /* rendered by context */ }
 	}
 
 	async function chooseLutFolder(closeOnSuccess = false) {
@@ -99,6 +99,45 @@
 		const total = app.state.images.length;
 		if (total < 2) return;
 		selectImage((app.state.activeImageIndex + offset + total) % total);
+	}
+	function handleFilmstripKeydown(event: KeyboardEvent) {
+		const target = event.target instanceof HTMLElement
+			? event.target.closest<HTMLElement>('[data-filmstrip-index]')
+			: null;
+		if (!target || app.state.images.length < 2) return;
+		let nextIndex: number;
+		switch (event.key) {
+			case 'ArrowDown':
+			case 'ArrowRight':
+				nextIndex = (app.state.activeImageIndex + 1) % app.state.images.length;
+				break;
+			case 'ArrowUp':
+			case 'ArrowLeft':
+				nextIndex = (app.state.activeImageIndex - 1 + app.state.images.length) % app.state.images.length;
+				break;
+			case 'Home':
+				nextIndex = 0;
+				break;
+			case 'End':
+				nextIndex = app.state.images.length - 1;
+				break;
+			default:
+				return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		selectImage(nextIndex);
+		requestAnimationFrame(() => {
+			document.querySelector<HTMLButtonElement>(`[data-filmstrip-index="${nextIndex}"]`)?.focus();
+		});
+	}
+	function handleImageShortcut(event: KeyboardEvent) {
+		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || app.state.images.length < 2) return;
+		if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+		const target = event.target instanceof HTMLElement ? event.target : null;
+		if (target?.closest('button, input, textarea, select, a, [contenteditable="true"], dialog[open], .diff')) return;
+		event.preventDefault();
+		selectRelativeImage(event.key === 'ArrowRight' ? 1 : -1);
 	}
 	function removeImage(event: MouseEvent, index: number) {
 		event.stopPropagation();
@@ -158,6 +197,7 @@
 </script>
 
 <svelte:head><title>Luty — fast LUT finishing</title><meta name="description" content="A fast, focused desktop LUT processor." /></svelte:head>
+<svelte:window onkeydown={handleImageShortcut} />
 
 <input bind:this={fileInput} type="file" class="hidden" multiple accept="image/png,image/jpeg,image/webp,image/avif,image/tiff,image/gif,image/bmp" onchange={onBrowserFiles} />
 
@@ -210,7 +250,7 @@
 						{#each app.state.images as image, index (image.previewUrl)}
 							<li class="list-row gap-2 border border-transparent p-2" class:border-primary={index === app.state.activeImageIndex} class:bg-base-200={index === app.state.activeImageIndex}>
 								<img src={image.previewUrl} alt="" class="size-9 rounded-field object-cover" class:ring-2={index === app.state.activeImageIndex} class:ring-primary={index === app.state.activeImageIndex} />
-								<button class="min-w-0 text-left" aria-current={index === app.state.activeImageIndex ? 'true' : undefined} onclick={() => selectImage(index)}>
+								<button class="min-w-0 text-left" data-filmstrip-index={index} tabindex={index === app.state.activeImageIndex ? 0 : -1} aria-current={index === app.state.activeImageIndex ? 'true' : undefined} onclick={() => selectImage(index)} onkeydown={handleFilmstripKeydown}>
 									<span class="block truncate text-xs font-medium">{imageName(image)}</span>
 									{#if index === app.state.activeImageIndex}
 										<span class="mt-0.5 flex items-center gap-1 text-[10px] font-medium text-primary"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>Selected</span>

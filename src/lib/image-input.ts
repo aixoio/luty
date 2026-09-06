@@ -4,6 +4,7 @@ import { IMAGE_EXTENSIONS } from '$lib/types';
 import { api, isNativeApp, nativeFileUrl } from '$lib/tauri';
 
 const acceptedExtensions = new Set<string>(IMAGE_EXTENSIONS);
+const MAX_PREVIEW_JOBS = 2;
 
 export function fileExtension(path: string): string {
 	const filename = path.split(/[\\/]/).pop() ?? '';
@@ -20,23 +21,48 @@ export async function selectNativeImage(path: string): Promise<SelectedImage> {
 		throw new Error('Choose a PNG, JPEG, WebP, TIFF, AVIF, GIF, or BMP image.');
 	}
 
-	const [info, previewUrl] = await Promise.all([api.inspectImage(path), nativeFileUrl(path)]);
+	const [info, previewUrl] = await Promise.all([
+		api.inspectImage(path),
+		api.renderSourcePreview(path).then((result) => nativeFileUrl(result.outputPath))
+	]);
 	return { kind: 'native', path, info, previewUrl };
 }
 
 export function selectNativeImages(paths: string[]): Promise<SelectedImage[]> {
-	return Promise.all(paths.map(selectNativeImage));
+	return mapWithConcurrency(paths, MAX_PREVIEW_JOBS, selectNativeImage);
 }
 
-export function selectBrowserImage(file: File): SelectedImage {
+export async function selectBrowserImage(file: File): Promise<SelectedImage> {
 	if (!file.type.startsWith('image/') && !isAcceptedImage(file.name)) {
 		throw new Error('Choose a supported image file.');
 	}
-	return { kind: 'browser', file, previewUrl: URL.createObjectURL(file) };
+	const bitmap = await createImageBitmap(file, { colorSpaceConversion: 'default' });
+	try {
+		const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+		const canvas = document.createElement('canvas');
+		canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+		canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+		const context = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
+		if (!context) throw new Error('Could not create an SDR image preview.');
+		context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+		const preview = await new Promise<Blob>((resolve, reject) => {
+			canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not encode the SDR image preview.')), 'image/png');
+		});
+		return { kind: 'browser', file, previewUrl: URL.createObjectURL(preview) };
+	} finally {
+		bitmap.close();
+	}
 }
 
-export function selectBrowserImages(files: File[]): SelectedImage[] {
-	return files.map(selectBrowserImage);
+export async function selectBrowserImages(files: File[]): Promise<SelectedImage[]> {
+	const images: SelectedImage[] = [];
+	try {
+		for (const file of files) images.push(await selectBrowserImage(file));
+		return images;
+	} catch (error) {
+		releaseImagePreviews(images);
+		throw error;
+	}
 }
 
 export function releaseImagePreview(image: SelectedImage | null): void {
@@ -45,6 +71,23 @@ export function releaseImagePreview(image: SelectedImage | null): void {
 
 export function releaseImagePreviews(images: SelectedImage[]): void {
 	for (const image of images) releaseImagePreview(image);
+}
+
+async function mapWithConcurrency<T, R>(
+	values: T[],
+	limit: number,
+	transform: (value: T) => Promise<R>
+): Promise<R[]> {
+	const results = new Array<R>(values.length);
+	let nextIndex = 0;
+	async function worker() {
+		while (nextIndex < values.length) {
+			const index = nextIndex++;
+			results[index] = await transform(values[index]);
+		}
+	}
+	await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+	return results;
 }
 
 /**
