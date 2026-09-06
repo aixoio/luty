@@ -71,7 +71,8 @@ export type PreviewPhase = 'idle' | 'rendering' | 'ready' | 'error';
 export interface AppState {
 	settings: AppSettings;
 	catalog: LutCatalog | null;
-	selectedImage: SelectedImage | null;
+	images: SelectedImage[];
+	activeImageIndex: number;
 	selectedLutPath: string | null;
 	intensity: number;
 	phase: WorkPhase;
@@ -81,5 +82,9 @@ export interface AppState {
 	previewError: string | null;
 	exportProgress: number;
 	exportStage: string;
+	exportCompleted: number;
+	exportTotal: number;
+	exportResults: ProcessImageResult[];
+	exportDestination: string | null;
 	error: string | null;
 }

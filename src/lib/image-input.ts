@@ -24,6 +24,10 @@ export async function selectNativeImage(path: string): Promise<SelectedImage> {
 	return { kind: 'native', path, info, previewUrl };
 }
 
+export function selectNativeImages(paths: string[]): Promise<SelectedImage[]> {
+	return Promise.all(paths.map(selectNativeImage));
+}
+
 export function selectBrowserImage(file: File): SelectedImage {
 	if (!file.type.startsWith('image/') && !isAcceptedImage(file.name)) {
 		throw new Error('Choose a supported image file.');
@@ -31,8 +35,16 @@ export function selectBrowserImage(file: File): SelectedImage {
 	return { kind: 'browser', file, previewUrl: URL.createObjectURL(file) };
 }
 
+export function selectBrowserImages(files: File[]): SelectedImage[] {
+	return files.map(selectBrowserImage);
+}
+
 export function releaseImagePreview(image: SelectedImage | null): void {
 	if (image?.kind === 'browser') URL.revokeObjectURL(image.previewUrl);
+}
+
+export function releaseImagePreviews(images: SelectedImage[]): void {
+	for (const image of images) releaseImagePreview(image);
 }
 
 /**
@@ -40,7 +52,7 @@ export function releaseImagePreview(image: SelectedImage | null): void {
  * absolute path required by the Rust image pipeline. Returns a no-op in a browser.
  */
 export async function listenForNativeImageDrops(
-	onDrop: (path: string) => void | Promise<void>,
+	onDrop: (paths: string[]) => void | Promise<void>,
 	onHoverChange?: (hovering: boolean) => void
 ): Promise<UnlistenFn> {
 	if (!isNativeApp()) return () => undefined;
@@ -57,7 +69,7 @@ export async function listenForNativeImageDrops(
 		}
 
 		onHoverChange?.(false);
-		const path = event.payload.paths.find(isAcceptedImage);
-		if (path) void onDrop(path);
+		const paths = event.payload.paths.filter(isAcceptedImage);
+		if (paths.length) void onDrop(paths);
 	});
 }

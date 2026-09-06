@@ -42,9 +42,13 @@ export const api = {
 	listLuts: () => call<LutCatalog>('list_luts'),
 	setLutDirectory: (path: string) => call<LutCatalog>('set_lut_directory', { path }),
 	chooseImage: () => call<string | null>('choose_image'),
+	chooseImages: () => call<string[]>('choose_images'),
 	chooseLutDirectory: () => call<string | null>('choose_lut_directory'),
 	chooseOutputPath: (suggestedName?: string) =>
 		call<string | null>('choose_output_path', { suggestedName: suggestedName ?? null }),
+	chooseOutputDirectory: () => call<string | null>('choose_output_directory'),
+	availableOutputPaths: (directory: string, names: string[]) =>
+		call<string[]>('available_output_paths', { directory, names }),
 	inspectImage: (inputPath: string) => call<ImageInfo>('inspect_image', { inputPath }),
 	processImage: async (
 		request: ProcessImageRequest,

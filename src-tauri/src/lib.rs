@@ -5,7 +5,7 @@ use lut::{scan_directory, CubeLut, LutDescriptor};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufWriter, Write},
@@ -143,6 +143,31 @@ async fn choose_image(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+async fn choose_images(app: AppHandle) -> Result<Vec<String>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter(
+            "Images",
+            &[
+                "png", "jpg", "jpeg", "webp", "avif", "tif", "tiff", "bmp", "gif", "qoi", "tga",
+            ],
+        )
+        .pick_files(move |paths| {
+            let paths = paths
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|path| path.into_path().ok())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            let _ = sender.send(paths);
+        });
+    receiver
+        .await
+        .map_err(|_| "The image picker closed unexpectedly".to_string())
+}
+
+#[tauri::command]
 async fn choose_lut_directory(app: AppHandle) -> Result<Option<String>, String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_folder(move |path| {
@@ -171,6 +196,54 @@ async fn choose_output_path(
         .map_err(|_| "The export picker closed unexpectedly".to_string())
 }
 
+#[tauri::command]
+async fn choose_output_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = sender.send(dialog_path_to_string(path));
+    });
+    receiver
+        .await
+        .map_err(|_| "The export folder picker closed unexpectedly".to_string())
+}
+
+#[tauri::command]
+fn available_output_paths(directory: String, names: Vec<String>) -> Result<Vec<String>, String> {
+    let directory = Path::new(&directory)
+        .canonicalize()
+        .map_err(|error| format!("Could not access output directory '{directory}': {error}"))?;
+    if !directory.is_dir() {
+        return Err("The selected output location is not a directory".into());
+    }
+
+    let mut reserved = HashSet::new();
+    let mut paths = Vec::with_capacity(names.len());
+    for name in names {
+        let requested = Path::new(&name);
+        if requested.file_name() != Some(requested.as_os_str()) {
+            return Err("An output filename contained an invalid path".into());
+        }
+        let stem = requested
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("image");
+        let extension = requested
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("png");
+        let mut candidate = directory.join(&name);
+        let mut suffix = 2_u32;
+        while candidate.exists() || reserved.contains(&candidate) {
+            candidate = directory.join(format!("{stem}-{suffix}.{extension}"));
+            suffix += 1;
+        }
+        reserved.insert(candidate.clone());
+        paths.push(candidate.to_string_lossy().into_owned());
+    }
+    Ok(paths)
+}
+
 fn dialog_path_to_string(path: Option<tauri_plugin_dialog::FilePath>) -> Option<String> {
     path.and_then(|path| path.into_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
@@ -179,15 +252,34 @@ fn dialog_path_to_string(path: Option<tauri_plugin_dialog::FilePath>) -> Option<
 #[tauri::command]
 fn inspect_image(input_path: String) -> Result<ImageInfo, String> {
     let path = Path::new(&input_path);
-    let (image, format) = decode_image_with_format(path)?;
-    let format = format
+    let reader = ImageReader::open(path)
+        .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
+        .with_guessed_format()
+        .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?;
+    let format = reader
+        .format()
         .map(|value| format!("{value:?}"))
         .unwrap_or_else(|| "Unknown".into());
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|error| format!("Could not inspect image '{}': {error}", path.display()))?;
+    let (mut width, mut height) = decoder.dimensions();
+    let color_type = format!("{:?}", decoder.color_type());
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    if matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    ) {
+        std::mem::swap(&mut width, &mut height);
+    }
     Ok(ImageInfo {
         path: path.to_string_lossy().into_owned(),
-        width: image.width(),
-        height: image.height(),
-        color_type: format!("{:?}", image.color()),
+        width,
+        height,
+        color_type,
         format,
     })
 }
@@ -381,15 +473,10 @@ fn render_preview_blocking(
 }
 
 fn decode_image(path: &Path) -> Result<DynamicImage, String> {
-    decode_image_with_format(path).map(|(image, _)| image)
-}
-
-fn decode_image_with_format(path: &Path) -> Result<(DynamicImage, Option<ImageFormat>), String> {
     let reader = ImageReader::open(path)
         .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
         .with_guessed_format()
         .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?;
-    let format = reader.format();
     let mut decoder = reader
         .into_decoder()
         .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
@@ -397,7 +484,7 @@ fn decode_image_with_format(path: &Path) -> Result<(DynamicImage, Option<ImageFo
     let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
     image.apply_orientation(orientation);
-    Ok((image, format))
+    Ok(image)
 }
 
 fn apply_lut(image: DynamicImage, lut: &CubeLut, intensity: f32) -> image::RgbaImage {
@@ -548,8 +635,11 @@ pub fn run() {
             set_lut_directory,
             list_luts,
             choose_image,
+            choose_images,
             choose_lut_directory,
             choose_output_path,
+            choose_output_directory,
+            available_output_paths,
             inspect_image,
             process_image,
             render_preview
