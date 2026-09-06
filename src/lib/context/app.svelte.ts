@@ -1,5 +1,5 @@
 import { createContext } from 'svelte';
-import { api, errorMessage } from '$lib/tauri';
+import { api, errorMessage, nativeFileUrl } from '$lib/tauri';
 import { releaseImagePreview, selectBrowserImage, selectNativeImage } from '$lib/image-input';
 import type { AppState, ProcessImageResult } from '$lib/types';
 
@@ -12,6 +12,11 @@ function initialState(): AppState {
 		intensity: 1,
 		phase: 'idle',
 		result: null,
+		previewUrl: null,
+		previewPhase: 'idle',
+		previewError: null,
+		exportProgress: 0,
+		exportStage: '',
 		error: null
 	};
 }
@@ -22,6 +27,8 @@ export class AppContext {
 	canProcess = $derived(
 		this.state.selectedImage?.kind === 'native' && Boolean(this.state.selectedLutPath)
 	);
+	private previewTimer: ReturnType<typeof setTimeout> | undefined;
+	private previewGeneration = 0;
 
 	private async run<T>(work: () => Promise<T>, apply: (result: T) => Partial<AppState>) {
 		this.state.phase = 'loading';
@@ -39,6 +46,8 @@ export class AppContext {
 	}
 
 	reset() {
+		if (this.previewTimer) clearTimeout(this.previewTimer);
+		this.previewGeneration += 1;
 		releaseImagePreview(this.state.selectedImage);
 		Object.assign(this.state, initialState());
 	}
@@ -56,6 +65,7 @@ export class AppContext {
 	}
 
 	async setLutDirectory(path: string) {
+		this.clearPreview();
 		return this.run(() => api.setLutDirectory(path), (catalog) => ({
 			catalog,
 			settings: { lutDirectory: catalog.directory },
@@ -75,11 +85,13 @@ export class AppContext {
 
 	async selectNativeImage(path: string) {
 		const previous = this.state.selectedImage;
+		this.clearPreview();
 		const image = await this.run(() => selectNativeImage(path), (selectedImage) => ({
 			selectedImage,
 			result: null
 		}));
 		releaseImagePreview(previous);
+		this.schedulePreview(0);
 		return image;
 	}
 
@@ -90,6 +102,7 @@ export class AppContext {
 	}
 
 	selectBrowserImage(file: File) {
+		this.clearPreview();
 		const previous = this.state.selectedImage;
 		this.state.selectedImage = selectBrowserImage(file);
 		this.state.result = null;
@@ -100,11 +113,14 @@ export class AppContext {
 	selectLut(path: string | null) {
 		this.state.selectedLutPath = path;
 		this.state.result = null;
+		this.clearPreview();
+		this.schedulePreview(0);
 	}
 
 	setIntensity(value: number) {
 		this.state.intensity = Math.min(1, Math.max(0, value));
 		this.state.result = null;
+		this.schedulePreview();
 	}
 
 	async process(outputPath: string): Promise<ProcessImageResult> {
@@ -116,14 +132,21 @@ export class AppContext {
 
 		this.state.phase = 'processing';
 		this.state.error = null;
+		this.state.exportProgress = 5;
+		this.state.exportStage = 'Preparing image';
 		try {
 			const result = await api.processImage({
 				inputPath: image.path,
 				lutPath: this.state.selectedLutPath,
 				outputPath,
 				intensity: this.state.intensity
+			}, (progress) => {
+				this.state.exportProgress = progress.percent;
+				this.state.exportStage = progress.stage;
 			});
 			this.state.result = result;
+			this.state.exportProgress = 100;
+			this.state.exportStage = 'Export complete';
 			this.state.phase = 'complete';
 			return result;
 		} catch (error) {
@@ -137,6 +160,42 @@ export class AppContext {
 		const outputPath = await api.chooseOutputPath(suggestedName);
 		if (!outputPath) return null;
 		return this.process(outputPath);
+	}
+
+	private clearPreview() {
+		if (this.previewTimer) clearTimeout(this.previewTimer);
+		this.previewTimer = undefined;
+		this.previewGeneration += 1;
+		this.state.previewUrl = null;
+		this.state.previewPhase = 'idle';
+		this.state.previewError = null;
+	}
+
+	private schedulePreview(delay = 140) {
+		if (this.previewTimer) clearTimeout(this.previewTimer);
+		const image = this.state.selectedImage;
+		if (image?.kind !== 'native' || !this.state.selectedLutPath) return;
+		this.previewTimer = setTimeout(() => void this.renderPreview(), delay);
+	}
+
+	private async renderPreview() {
+		const image = this.state.selectedImage;
+		const lutPath = this.state.selectedLutPath;
+		if (image?.kind !== 'native' || !lutPath) return;
+		const generation = ++this.previewGeneration;
+		this.state.previewPhase = 'rendering';
+		this.state.previewError = null;
+		try {
+			const result = await api.renderPreview(image.path, lutPath, this.state.intensity);
+			const url = await nativeFileUrl(result.outputPath);
+			if (generation !== this.previewGeneration) return;
+			this.state.previewUrl = url;
+			this.state.previewPhase = 'ready';
+		} catch (error) {
+			if (generation !== this.previewGeneration) return;
+			this.state.previewPhase = 'error';
+			this.state.previewError = errorMessage(error);
+		}
 	}
 }
 

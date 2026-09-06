@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
-    time::{Instant, SystemTime},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{ipc::Channel, AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -67,6 +68,13 @@ pub struct ProcessImageResult {
     width: u32,
     height: u32,
     elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessProgress {
+    stage: &'static str,
+    percent: u8,
 }
 
 #[tauri::command]
@@ -195,19 +203,56 @@ fn inspect_image(input_path: String) -> Result<ImageInfo, String> {
 async fn process_image(
     state: State<'_, AppState>,
     request: ProcessImageRequest,
+    progress: Channel<ProcessProgress>,
 ) -> Result<ProcessImageResult, String> {
     if !request.intensity.is_finite() || !(0.0..=1.0).contains(&request.intensity) {
         return Err("Intensity must be a number between 0 and 1".into());
     }
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || process_image_blocking(&state, request))
-        .await
-        .map_err(|error| format!("Image processing task failed: {error}"))?
+    send_progress(&progress, "Preparing image", 5);
+    tauri::async_runtime::spawn_blocking(move || {
+        process_image_blocking_with_progress(&state, request, Some(&progress))
+    })
+    .await
+    .map_err(|error| format!("Image processing task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn render_preview(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input_path: String,
+    lut_path: String,
+    intensity: f32,
+) -> Result<ProcessImageResult, String> {
+    if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+        return Err("Intensity must be a number between 0 and 1".into());
+    }
+    let cache_directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| format!("Could not locate preview cache: {error}"))?
+        .join("previews");
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        render_preview_blocking(&state, &input_path, &lut_path, intensity, &cache_directory)
+    })
+    .await
+    .map_err(|error| format!("Preview task failed: {error}"))?
+}
+
+#[cfg(test)]
 fn process_image_blocking(
     state: &AppState,
     request: ProcessImageRequest,
+) -> Result<ProcessImageResult, String> {
+    process_image_blocking_with_progress(state, request, None)
+}
+
+fn process_image_blocking_with_progress(
+    state: &AppState,
+    request: ProcessImageRequest,
+    progress: Option<&Channel<ProcessProgress>>,
 ) -> Result<ProcessImageResult, String> {
     let started = Instant::now();
     let lut_path = canonical_lut_path(state, Path::new(&request.lut_path))?;
@@ -233,32 +278,12 @@ fn process_image_blocking(
         "Unsupported output extension. Use PNG, JPEG, WebP, AVIF, TIFF, BMP, QOI, or TGA."
             .to_string()
     })?;
-    let image = ImageReader::open(input_path)
-        .map_err(|error| format!("Could not open image '{}': {error}", input_path.display()))?
-        .with_guessed_format()
-        .map_err(|error| {
-            format!(
-                "Could not identify image '{}': {error}",
-                input_path.display()
-            )
-        })?
-        .decode()
-        .map_err(|error| format!("Could not decode image '{}': {error}", input_path.display()))?;
+    send_optional_progress(progress, "Decoding image", 18);
+    let image = decode_image(input_path)?;
     let (width, height) = (image.width(), image.height());
-    let mut pixels = image.into_rgba8();
-    let intensity = request.intensity;
-    pixels.as_mut().par_chunks_exact_mut(4).for_each(|pixel| {
-        let original = [
-            pixel[0] as f32 / 255.0,
-            pixel[1] as f32 / 255.0,
-            pixel[2] as f32 / 255.0,
-        ];
-        let transformed = lut.sample(original);
-        for channel in 0..3 {
-            let value = original[channel] + (transformed[channel] - original[channel]) * intensity;
-            pixel[channel] = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-        }
-    });
+    send_optional_progress(progress, "Applying LUT", 38);
+    let pixels = apply_lut(image, &lut, request.intensity);
+    send_optional_progress(progress, "Encoding image", 82);
     let file = fs::File::create(output_path).map_err(|error| {
         format!(
             "Could not create output '{}': {error}",
@@ -280,12 +305,124 @@ fn process_image_blocking(
             output_path.display()
         )
     })?;
+    send_optional_progress(progress, "Export complete", 100);
     Ok(ProcessImageResult {
         output_path: output_path.to_string_lossy().into_owned(),
         width,
         height,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn render_preview_blocking(
+    state: &AppState,
+    input_path: &str,
+    lut_path: &str,
+    intensity: f32,
+    cache_directory: &Path,
+) -> Result<ProcessImageResult, String> {
+    let started = Instant::now();
+    let input_path = Path::new(input_path);
+    let lut_path = canonical_lut_path(state, Path::new(lut_path))?;
+    let lut = cached_lut(state, &lut_path)?;
+    let metadata = fs::metadata(input_path).map_err(|error| {
+        format!(
+            "Could not inspect image '{}': {error}",
+            input_path.display()
+        )
+    })?;
+    let lut_metadata = fs::metadata(&lut_path)
+        .map_err(|error| format!("Could not inspect LUT '{}': {error}", lut_path.display()))?;
+    let mut hasher = DefaultHasher::new();
+    input_path.hash(&mut hasher);
+    lut_path.hash(&mut hasher);
+    intensity.to_bits().hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .hash(&mut hasher);
+    lut_metadata.len().hash(&mut hasher);
+    lut_metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .hash(&mut hasher);
+    fs::create_dir_all(cache_directory)
+        .map_err(|error| format!("Could not create preview cache: {error}"))?;
+    let output_path = cache_directory.join(format!("{:016x}.png", hasher.finish()));
+
+    if output_path.is_file() {
+        let (width, height) = image::image_dimensions(&output_path)
+            .map_err(|error| format!("Could not inspect cached preview: {error}"))?;
+        return Ok(ProcessImageResult {
+            output_path: output_path.to_string_lossy().into_owned(),
+            width,
+            height,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+    }
+
+    let image = decode_image(input_path)?;
+    let image = if image.width() > 1600 || image.height() > 1600 {
+        image.thumbnail(1600, 1600)
+    } else {
+        image
+    };
+    let (width, height) = (image.width(), image.height());
+    let pixels = apply_lut(image, &lut, intensity);
+    DynamicImage::ImageRgba8(pixels)
+        .save_with_format(&output_path, ImageFormat::Png)
+        .map_err(|error| format!("Could not write preview: {error}"))?;
+    Ok(ProcessImageResult {
+        output_path: output_path.to_string_lossy().into_owned(),
+        width,
+        height,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn decode_image(path: &Path) -> Result<DynamicImage, String> {
+    ImageReader::open(path)
+        .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
+        .with_guessed_format()
+        .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?
+        .decode()
+        .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))
+}
+
+fn apply_lut(image: DynamicImage, lut: &CubeLut, intensity: f32) -> image::RgbaImage {
+    let mut pixels = image.into_rgba8();
+    pixels.as_mut().par_chunks_exact_mut(4).for_each(|pixel| {
+        let original = [
+            pixel[0] as f32 / 255.0,
+            pixel[1] as f32 / 255.0,
+            pixel[2] as f32 / 255.0,
+        ];
+        let transformed = lut.sample(original);
+        for channel in 0..3 {
+            let value = original[channel] + (transformed[channel] - original[channel]) * intensity;
+            pixel[channel] = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    });
+    pixels
+}
+
+fn send_progress(channel: &Channel<ProcessProgress>, stage: &'static str, percent: u8) {
+    let _ = channel.send(ProcessProgress { stage, percent });
+}
+
+fn send_optional_progress(
+    channel: Option<&Channel<ProcessProgress>>,
+    stage: &'static str,
+    percent: u8,
+) {
+    if let Some(channel) = channel {
+        send_progress(channel, stage, percent);
+    }
 }
 
 fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
@@ -408,7 +545,8 @@ pub fn run() {
             choose_lut_directory,
             choose_output_path,
             inspect_image,
-            process_image
+            process_image,
+            render_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -458,6 +596,21 @@ mod tests {
         .unwrap();
         let pixel = image::open(&output).unwrap().into_rgba8().get_pixel(0, 0).0;
         assert_eq!(pixel, [0, 255, 255, 137]);
+        let preview = render_preview_blocking(
+            &state,
+            &input.to_string_lossy(),
+            &cube.to_string_lossy(),
+            1.0,
+            &directory.join("previews"),
+        )
+        .unwrap();
+        assert_eq!((preview.width, preview.height), (1, 1));
+        let preview_pixel = image::open(preview.output_path)
+            .unwrap()
+            .into_rgba8()
+            .get_pixel(0, 0)
+            .0;
+        assert_eq!(preview_pixel, [0, 255, 255, 137]);
         fs::remove_dir_all(directory).unwrap();
     }
 }

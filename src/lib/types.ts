@@ -56,11 +56,17 @@ export interface ProcessImageResult {
 	elapsedMs: number;
 }
 
+export interface ProcessProgress {
+	stage: string;
+	percent: number;
+}
+
 export type SelectedImage =
 	| { kind: 'native'; path: string; info: ImageInfo; previewUrl: string }
 	| { kind: 'browser'; file: File; previewUrl: string };
 
 export type WorkPhase = 'idle' | 'loading' | 'processing' | 'complete' | 'error';
+export type PreviewPhase = 'idle' | 'rendering' | 'ready' | 'error';
 
 export interface AppState {
 	settings: AppSettings;
@@ -70,5 +76,10 @@ export interface AppState {
 	intensity: number;
 	phase: WorkPhase;
 	result: ProcessImageResult | null;
+	previewUrl: string | null;
+	previewPhase: PreviewPhase;
+	previewError: string | null;
+	exportProgress: number;
+	exportStage: string;
 	error: string | null;
 }

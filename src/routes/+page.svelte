@@ -7,11 +7,24 @@
 	let fileInput: HTMLInputElement;
 	let settingsDialog: HTMLDialogElement;
 	let onboardingDialog: HTMLDialogElement;
+	let exportDialog: HTMLDialogElement;
 	let query = $state('');
 	let dragActive = $state(false);
 	let hydrated = $state(false);
+	let viewMode = $state<'before' | 'after'>('after');
 	let visibleLuts = $derived(app.supportedLuts.filter((lut) => (lut.title ?? lut.name).toLowerCase().includes(query.trim().toLowerCase())));
 	let activeLut = $derived(app.supportedLuts.find((lut) => lut.path === app.state.selectedLutPath) ?? null);
+	let displayedImageUrl = $derived(
+		viewMode === 'after' && app.state.previewUrl
+			? app.state.previewUrl
+			: app.state.selectedImage?.previewUrl
+	);
+
+	$effect(() => {
+		if (app.state.phase === 'processing' && exportDialog && !exportDialog.open) {
+			exportDialog.showModal();
+		}
+	});
 
 	onMount(() => {
 		let disposed = false;
@@ -58,6 +71,10 @@
 	}
 
 	function lutLabel(lut: LutDescriptor) { return lut.title?.trim() || lut.name.replace(/\.cube$/i, ''); }
+	function selectLut(path: string) {
+		viewMode = app.state.selectedImage?.kind === 'native' ? 'after' : 'before';
+		app.selectLut(path);
+	}
 	function imageName() {
 		const image = app.state.selectedImage;
 		if (!image) return 'No image selected';
@@ -120,8 +137,18 @@
 			<div class="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-5">
 				{#if app.state.selectedImage}
 					<div class="relative flex size-full items-center justify-center overflow-hidden rounded-box border border-base-300 bg-base-100">
-						<img src={app.state.selectedImage.previewUrl} alt={`Preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
-						<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{activeLut ? `${lutLabel(activeLut)} selected` : 'Original'}</span>{#if activeLut}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round(app.state.intensity * 100)}%</span>{/if}</div>
+						<img src={displayedImageUrl} alt={`${viewMode === 'after' ? 'After' : 'Before'} preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
+						<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{viewMode === 'before' ? 'Before · original' : activeLut ? `After · ${lutLabel(activeLut)}` : 'Original'}</span>{#if activeLut && viewMode === 'after'}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round(app.state.intensity * 100)}%</span>{/if}</div>
+						{#if app.state.previewPhase === 'rendering' && viewMode === 'after'}
+							<div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-200/35"><span class="badge badge-neutral gap-2"><span class="loading loading-spinner loading-xs"></span>Rendering preview</span></div>
+						{/if}
+						{#if app.state.previewError && viewMode === 'after'}
+							<div role="alert" class="alert alert-error alert-soft absolute bottom-16 left-1/2 w-auto max-w-[80%] -translate-x-1/2 py-2 text-xs"><span>{app.state.previewError}</span></div>
+						{/if}
+						<div class="join absolute bottom-3 left-1/2 -translate-x-1/2 border border-base-300 bg-base-100 p-1">
+							<button class="btn btn-sm join-item" class:btn-active={viewMode === 'before'} aria-pressed={viewMode === 'before'} onclick={() => (viewMode = 'before')}>Before</button>
+							<button class="btn btn-sm join-item" class:btn-active={viewMode === 'after'} aria-pressed={viewMode === 'after'} disabled={!activeLut || app.state.selectedImage?.kind !== 'native'} onclick={() => (viewMode = 'after')}>After</button>
+						</div>
 					</div>
 				{:else}
 					<button class="flex h-full min-h-72 w-full max-w-2xl flex-col items-center justify-center rounded-box border border-dashed border-base-300 bg-base-100 p-8 text-center hover:border-base-content/40" class:border-primary={dragActive} onclick={chooseImage}>
@@ -141,7 +168,7 @@
 				{:else if visibleLuts.length}
 					<div class="grid grid-cols-2 gap-2" role="listbox" aria-label="LUT library">
 						{#each visibleLuts as lut}
-							<button class="group overflow-hidden rounded-box border bg-base-200 text-left" class:border-base-300={app.state.selectedLutPath !== lut.path} class:border-primary={app.state.selectedLutPath === lut.path} class:ring-1={app.state.selectedLutPath === lut.path} class:ring-primary={app.state.selectedLutPath === lut.path} role="option" aria-selected={app.state.selectedLutPath === lut.path} onclick={() => app.selectLut(lut.path)}>
+							<button class="group overflow-hidden rounded-box border bg-base-200 text-left" class:border-base-300={app.state.selectedLutPath !== lut.path} class:border-primary={app.state.selectedLutPath === lut.path} class:ring-1={app.state.selectedLutPath === lut.path} class:ring-primary={app.state.selectedLutPath === lut.path} role="option" aria-selected={app.state.selectedLutPath === lut.path} onclick={() => selectLut(lut.path)}>
 								<div class="relative h-16 overflow-hidden bg-base-300">{#if app.state.selectedImage}<img src={app.state.selectedImage.previewUrl} alt="" class="size-full object-cover opacity-75 transition-transform duration-200 group-hover:scale-105" />{:else}<div class="grid size-full place-items-center text-[10px] text-base-content/25">Preview</div>{/if}{#if app.state.selectedLutPath === lut.path}<span class="absolute right-1.5 top-1.5 grid size-4 place-items-center rounded-full bg-primary text-primary-content"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 8 3 3 7-7"/></svg></span>{/if}</div>
 								<div class="px-2 py-2"><p class="truncate text-xs font-medium">{lutLabel(lut)}</p><p class="mt-0.5 text-[10px] text-base-content/40">{lut.size ? `${lut.size} point` : 'Cube LUT'}</p></div>
 							</button>
@@ -173,4 +200,41 @@
 		<div class="mt-6 rounded-box border border-base-300 bg-base-200 p-4"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><p class="text-sm font-medium">LUT library</p><p class="mt-1 truncate text-xs text-base-content/45">{app.state.settings.lutDirectory ?? 'No folder selected'}</p></div><button class="btn btn-sm shrink-0" onclick={() => chooseLutFolder()}>Change</button></div><div class="mt-3 flex items-center gap-2 text-xs text-base-content/50"><span class="status" class:status-success={app.supportedLuts.length > 0}></span>{app.supportedLuts.length} supported LUTs found</div></div>
 		<div class="modal-action"><form method="dialog"><button class="btn">Done</button></form></div>
 	</div><form method="dialog" class="modal-backdrop"><button aria-label="Close settings">close</button></form>
+</dialog>
+
+<dialog bind:this={exportDialog} class="modal modal-middle" aria-labelledby="export-title">
+	<div class="modal-box max-w-md border border-base-300 bg-base-100">
+		{#if app.state.phase === 'processing'}
+			<div class="flex items-center gap-3">
+				<span class="loading loading-spinner loading-md text-primary"></span>
+				<div>
+					<h2 id="export-title" class="text-lg font-semibold">Exporting image</h2>
+					<p class="mt-1 text-sm text-base-content/50">Keep Luty open while the full-resolution image is processed.</p>
+				</div>
+			</div>
+			<div class="mt-6 flex items-center justify-between text-xs">
+				<span>{app.state.exportStage || 'Preparing image'}</span>
+				<span class="font-mono tabular-nums text-base-content/55">{app.state.exportProgress}%</span>
+			</div>
+			<progress class="progress progress-primary mt-2 w-full" value={app.state.exportProgress} max="100"></progress>
+		{:else if app.state.result}
+			<div class="flex items-start gap-3">
+				<span class="grid size-9 shrink-0 place-items-center rounded-full bg-success text-success-content">
+					<svg viewBox="0 0 20 20" class="size-5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>
+				</span>
+				<div class="min-w-0">
+					<h2 id="export-title" class="text-lg font-semibold">Export complete</h2>
+					<p class="mt-1 truncate text-sm text-base-content/50">{app.state.result.outputPath}</p>
+					<p class="mt-2 font-mono text-xs tabular-nums text-base-content/40">{app.state.result.width} × {app.state.result.height} · {app.state.result.elapsedMs} ms</p>
+				</div>
+			</div>
+			<progress class="progress progress-success mt-6 w-full" value="100" max="100"></progress>
+			<div class="modal-action"><form method="dialog"><button class="btn">Done</button></form></div>
+		{:else}
+			<h2 id="export-title" class="text-lg font-semibold">Export stopped</h2>
+			<p class="mt-2 text-sm text-error">{app.state.error ?? 'The image could not be exported.'}</p>
+			<progress class="progress progress-error mt-6 w-full" value={app.state.exportProgress} max="100"></progress>
+			<div class="modal-action"><form method="dialog"><button class="btn">Close</button></form></div>
+		{/if}
+	</div>
 </dialog>

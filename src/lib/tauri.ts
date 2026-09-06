@@ -2,6 +2,7 @@ import type {
 	AppSettings,
 	ImageInfo,
 	LutCatalog,
+	ProcessProgress,
 	ProcessImageRequest,
 	ProcessImageResult
 } from '$lib/types';
@@ -45,8 +46,17 @@ export const api = {
 	chooseOutputPath: (suggestedName?: string) =>
 		call<string | null>('choose_output_path', { suggestedName: suggestedName ?? null }),
 	inspectImage: (inputPath: string) => call<ImageInfo>('inspect_image', { inputPath }),
-	processImage: (request: ProcessImageRequest) =>
-		call<ProcessImageResult>('process_image', { request })
+	processImage: async (
+		request: ProcessImageRequest,
+		onProgress: (progress: ProcessProgress) => void
+	) => {
+		const { Channel } = await import('@tauri-apps/api/core');
+		const progress = new Channel<ProcessProgress>();
+		progress.onmessage = onProgress;
+		return call<ProcessImageResult>('process_image', { request, progress });
+	},
+	renderPreview: (inputPath: string, lutPath: string, intensity: number) =>
+		call<ProcessImageResult>('render_preview', { inputPath, lutPath, intensity })
 };
 
 export async function nativeFileUrl(path: string): Promise<string> {
