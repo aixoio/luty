@@ -1,6 +1,6 @@
 mod lut;
 
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{metadata::Orientation, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use lut::{scan_directory, CubeLut, LutDescriptor};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -179,17 +179,10 @@ fn dialog_path_to_string(path: Option<tauri_plugin_dialog::FilePath>) -> Option<
 #[tauri::command]
 fn inspect_image(input_path: String) -> Result<ImageInfo, String> {
     let path = Path::new(&input_path);
-    let reader = ImageReader::open(path)
-        .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
-        .with_guessed_format()
-        .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?;
-    let format = reader
-        .format()
+    let (image, format) = decode_image_with_format(path)?;
+    let format = format
         .map(|value| format!("{value:?}"))
         .unwrap_or_else(|| "Unknown".into());
-    let image = reader
-        .decode()
-        .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
     Ok(ImageInfo {
         path: path.to_string_lossy().into_owned(),
         width: image.width(),
@@ -334,6 +327,8 @@ fn render_preview_blocking(
     let lut_metadata = fs::metadata(&lut_path)
         .map_err(|error| format!("Could not inspect LUT '{}': {error}", lut_path.display()))?;
     let mut hasher = DefaultHasher::new();
+    // Invalidate previews made before decode-time orientation normalization.
+    2_u8.hash(&mut hasher);
     input_path.hash(&mut hasher);
     lut_path.hash(&mut hasher);
     intensity.to_bits().hash(&mut hasher);
@@ -386,12 +381,23 @@ fn render_preview_blocking(
 }
 
 fn decode_image(path: &Path) -> Result<DynamicImage, String> {
-    ImageReader::open(path)
+    decode_image_with_format(path).map(|(image, _)| image)
+}
+
+fn decode_image_with_format(path: &Path) -> Result<(DynamicImage, Option<ImageFormat>), String> {
+    let reader = ImageReader::open(path)
         .map_err(|error| format!("Could not open image '{}': {error}", path.display()))?
         .with_guessed_format()
-        .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?
-        .decode()
-        .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))
+        .map_err(|error| format!("Could not identify image '{}': {error}", path.display()))?;
+    let format = reader.format();
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut image = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("Could not decode image '{}': {error}", path.display()))?;
+    image.apply_orientation(orientation);
+    Ok((image, format))
 }
 
 fn apply_lut(image: DynamicImage, lut: &CubeLut, intensity: f32) -> image::RgbaImage {
@@ -555,8 +561,38 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Rgba, RgbaImage};
+    use image::{codecs::jpeg::JpegEncoder, ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
     use std::time::UNIX_EPOCH;
+
+    #[test]
+    fn normalizes_exif_orientation_while_decoding() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let input = std::env::temp_dir().join(format!(
+            "luty-orientation-test-{}-{nonce}.jpg",
+            std::process::id()
+        ));
+        let source = RgbImage::from_pixel(2, 3, Rgb([64, 128, 192]));
+        let file = fs::File::create(&input).unwrap();
+        let mut encoder = JpegEncoder::new_with_quality(BufWriter::new(file), 95);
+        // Little-endian TIFF payload with EXIF orientation 6 (rotate 90° clockwise).
+        encoder
+            .set_exif_metadata(vec![
+                0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00,
+                0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ])
+            .unwrap();
+        encoder.encode_image(&source).unwrap();
+        drop(encoder);
+
+        let decoded = decode_image(&input).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (3, 2));
+        let inspected = inspect_image(input.to_string_lossy().into_owned()).unwrap();
+        assert_eq!((inspected.width, inspected.height), (3, 2));
+        fs::remove_file(input).unwrap();
+    }
 
     #[test]
     fn processes_an_image_with_a_cube_lut() {
