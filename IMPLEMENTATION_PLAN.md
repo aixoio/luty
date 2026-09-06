@@ -12,7 +12,7 @@ Luty is a dark-only desktop image finishing tool. The first release optimizes fo
 
 ## Architecture
 
-- **SvelteKit UI:** orchestration, native event handling, state, accessible controls, and image presentation.
+- **SvelteKit UI:** orchestration, native event handling, rune-backed contextual state, accessible controls, and image presentation.
 - **Tauri commands:** settings, filesystem selection, LUT discovery, preview rendering, and export.
 - **Rust image pipeline:** decode, normalize pixels, trilinear LUT interpolation, intensity blend, encode.
 - **Persistence:** a small JSON settings file in Tauri's app config directory. Image data and LUT tables stay out of webview state.
@@ -36,4 +36,3 @@ Luty is a dark-only desktop image finishing tool. The first release optimizes fo
 - Parse each LUT once per fingerprint and reuse its contiguous RGB table.
 - Parallelize pixel transforms only when image size makes the scheduling cost worthwhile.
 - Write exports atomically and return paths plus dimensions, not image blobs.
-

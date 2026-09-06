@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { appStore, canProcess, isNativeApp, listenForNativeImageDrops, supportedLuts, type LutDescriptor } from '$lib';
+	import { getAppContext, isNativeApp, listenForNativeImageDrops, type LutDescriptor } from '$lib';
+
+	const app = getAppContext();
 
 	let fileInput: HTMLInputElement;
 	let settingsDialog: HTMLDialogElement;
@@ -8,17 +10,17 @@
 	let query = $state('');
 	let dragActive = $state(false);
 	let hydrated = $state(false);
-	let visibleLuts = $derived($supportedLuts.filter((lut) => (lut.title ?? lut.name).toLowerCase().includes(query.trim().toLowerCase())));
-	let activeLut = $derived($supportedLuts.find((lut) => lut.path === $appStore.selectedLutPath) ?? null);
+	let visibleLuts = $derived(app.supportedLuts.filter((lut) => (lut.title ?? lut.name).toLowerCase().includes(query.trim().toLowerCase())));
+	let activeLut = $derived(app.supportedLuts.find((lut) => lut.path === app.state.selectedLutPath) ?? null);
 
 	onMount(() => {
 		let disposed = false;
 		let unlisten: () => void = () => {};
 		void (async () => {
-			try { if (isNativeApp()) await appStore.hydrate(); } catch { /* rendered by store */ }
+			try { if (isNativeApp()) await app.hydrate(); } catch { /* rendered by context */ }
 			finally {
 				hydrated = true;
-				if (isNativeApp() && !$appStore.settings.lutDirectory && !disposed) onboardingDialog?.showModal();
+				if (isNativeApp() && !app.state.settings.lutDirectory && !disposed) onboardingDialog?.showModal();
 			}
 			unlisten = await listenForNativeImageDrops(selectDroppedPath, (value) => (dragActive = value));
 		})();
@@ -26,43 +28,43 @@
 	});
 
 	async function selectDroppedPath(path: string) {
-		try { await appStore.selectNativeImage(path); } catch { /* rendered by store */ }
+		try { await app.selectNativeImage(path); } catch { /* rendered by context */ }
 	}
 
 	async function chooseImage() {
 		if (!isNativeApp()) { fileInput?.click(); return; }
-		try { await appStore.chooseNativeImage(); } catch { /* rendered by store */ }
+		try { await app.chooseNativeImage(); } catch { /* rendered by context */ }
 	}
 
 	function onBrowserFile(event: Event) {
 		const file = (event.currentTarget as HTMLInputElement).files?.[0];
 		if (!file) return;
-		try { appStore.selectBrowserImage(file); } catch { /* constrained picker */ }
+		try { app.selectBrowserImage(file); } catch { /* constrained picker */ }
 	}
 
 	async function chooseLutFolder(closeOnSuccess = false) {
 		try {
-			const catalog = await appStore.chooseLutDirectory();
+			const catalog = await app.chooseLutDirectory();
 			if (catalog && closeOnSuccess) onboardingDialog?.close();
 		} catch { /* rendered by store */ }
 	}
 
 	async function exportImage() {
 		try {
-			const sourceName = $appStore.selectedImage?.kind === 'native'
-				? $appStore.selectedImage.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'image';
-			await appStore.chooseAndProcess(`${sourceName ?? 'image'}-${activeLut?.name ?? 'graded'}.png`);
+			const sourceName = app.state.selectedImage?.kind === 'native'
+				? app.state.selectedImage.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'image';
+			await app.chooseAndProcess(`${sourceName ?? 'image'}-${activeLut?.name ?? 'graded'}.png`);
 		} catch { /* rendered by store */ }
 	}
 
 	function lutLabel(lut: LutDescriptor) { return lut.title?.trim() || lut.name.replace(/\.cube$/i, ''); }
 	function imageName() {
-		const image = $appStore.selectedImage;
+		const image = app.state.selectedImage;
 		if (!image) return 'No image selected';
 		return image.kind === 'native' ? image.path.split(/[\\/]/).pop() ?? 'Image' : image.file.name;
 	}
 	function imageDimensions() {
-		const image = $appStore.selectedImage;
+		const image = app.state.selectedImage;
 		return image?.kind === 'native' ? `${image.info.width} × ${image.info.height}` : 'Ready to preview';
 	}
 </script>
@@ -77,9 +79,9 @@
 			<div class="grid size-7 shrink-0 place-items-center rounded-field bg-base-content text-xs font-black text-base-200">L</div>
 			<div class="hidden text-sm font-semibold sm:block">Luty</div><div class="h-4 w-px bg-base-300"></div>
 			<p class="min-w-0 truncate text-sm font-medium">{imageName()}</p>
-			{#if $appStore.phase === 'processing'}
+			{#if app.state.phase === 'processing'}
 				<span class="badge badge-soft badge-info badge-sm gap-1"><span class="loading loading-spinner loading-xs"></span>Processing</span>
-			{:else if $appStore.result}<span class="badge badge-soft badge-success badge-sm">Exported in {$appStore.result.elapsedMs} ms</span>{/if}
+			{:else if app.state.result}<span class="badge badge-soft badge-success badge-sm">Exported in {app.state.result.elapsedMs} ms</span>{/if}
 		</div>
 		<div class="flex items-center gap-1">
 			<button class="btn btn-ghost btn-sm hidden sm:inline-flex" onclick={chooseImage}>Open image</button>
@@ -91,10 +93,10 @@
 		</div>
 	</header>
 
-	{#if $appStore.error}
+	{#if app.state.error}
 		<div role="alert" class="alert alert-error alert-soft mx-3 mt-3 shrink-0 py-2 text-sm sm:mx-4">
 			<svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg>
-			<span class="min-w-0 flex-1 truncate">{$appStore.error}</span><button class="btn btn-ghost btn-xs" onclick={() => appStore.clearError()}>Dismiss</button>
+			<span class="min-w-0 flex-1 truncate">{app.state.error}</span><button class="btn btn-ghost btn-xs" onclick={() => app.clearError()}>Dismiss</button>
 		</div>
 	{/if}
 
@@ -108,18 +110,18 @@
 			</div>
 			<div class="border-t border-base-300 px-4 py-4"><p class="text-xs text-base-content/45">Source</p><p class="mt-1 truncate text-sm font-medium">{imageName()}</p><p class="mt-1 font-mono text-[11px] tabular-nums text-base-content/45">{imageDimensions()}</p></div>
 			<div class="mt-auto border-t border-base-300 p-3">
-				<div class="flex items-center justify-between text-xs"><span class="text-base-content/45">LUT folder</span><span class="badge badge-ghost badge-xs">{$supportedLuts.length}</span></div>
-				<p class="mt-2 truncate text-xs text-base-content/70">{$appStore.settings.lutDirectory ?? 'Not connected'}</p>
+				<div class="flex items-center justify-between text-xs"><span class="text-base-content/45">LUT folder</span><span class="badge badge-ghost badge-xs">{app.supportedLuts.length}</span></div>
+				<p class="mt-2 truncate text-xs text-base-content/70">{app.state.settings.lutDirectory ?? 'Not connected'}</p>
 				<button class="btn btn-ghost btn-sm mt-2 w-full" onclick={() => settingsDialog?.showModal()}>Manage library</button>
 			</div>
 		</aside>
 
 		<section class="relative flex min-h-0 flex-col bg-base-200">
 			<div class="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3 sm:p-5">
-				{#if $appStore.selectedImage}
+				{#if app.state.selectedImage}
 					<div class="relative flex size-full items-center justify-center overflow-hidden rounded-box border border-base-300 bg-base-100">
-						<img src={$appStore.selectedImage.previewUrl} alt={`Preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
-						<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{activeLut ? `${lutLabel(activeLut)} selected` : 'Original'}</span>{#if activeLut}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round($appStore.intensity * 100)}%</span>{/if}</div>
+						<img src={app.state.selectedImage.previewUrl} alt={`Preview of ${imageName()}`} class="max-h-full max-w-full object-contain" />
+						<div class="pointer-events-none absolute left-3 top-3 flex items-center gap-2"><span class="badge badge-neutral badge-sm">{activeLut ? `${lutLabel(activeLut)} selected` : 'Original'}</span>{#if activeLut}<span class="badge badge-ghost badge-sm font-mono tabular-nums">{Math.round(app.state.intensity * 100)}%</span>{/if}</div>
 					</div>
 				{:else}
 					<button class="flex h-full min-h-72 w-full max-w-2xl flex-col items-center justify-center rounded-box border border-dashed border-base-300 bg-base-100 p-8 text-center hover:border-base-content/40" class:border-primary={dragActive} onclick={chooseImage}>
@@ -128,19 +130,19 @@
 					</button>
 				{/if}
 			</div>
-			<div class="flex h-12 shrink-0 items-center justify-between border-t border-base-300 bg-base-100 px-3 text-xs sm:px-4"><div class="flex items-center gap-2 text-base-content/50"><span class="status" class:status-success={$appStore.selectedImage !== null}></span><span>{$appStore.selectedImage ? imageDimensions() : 'Waiting for an image'}</span></div><span class="font-mono tabular-nums text-base-content/45">Fit · 100%</span></div>
+			<div class="flex h-12 shrink-0 items-center justify-between border-t border-base-300 bg-base-100 px-3 text-xs sm:px-4"><div class="flex items-center gap-2 text-base-content/50"><span class="status" class:status-success={app.state.selectedImage !== null}></span><span>{app.state.selectedImage ? imageDimensions() : 'Waiting for an image'}</span></div><span class="font-mono tabular-nums text-base-content/45">Fit · 100%</span></div>
 		</section>
 
 		<aside class="flex min-h-0 flex-col border-l border-base-300 bg-base-100 max-lg:absolute max-lg:bottom-12 max-lg:right-0 max-lg:top-13 max-lg:z-10 max-lg:w-[272px] max-lg:translate-x-[calc(100%-44px)] max-lg:shadow-2xl max-lg:transition-transform max-lg:hover:translate-x-0">
 			<div class="border-b border-base-300 p-3"><div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">Looks</h2><span class="text-xs text-base-content/45">{visibleLuts.length} LUTs</span></div><label class="input input-sm w-full bg-base-200"><svg viewBox="0 0 24 24" class="size-4 text-base-content/40" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input bind:value={query} type="search" placeholder="Search LUTs" aria-label="Search LUTs" /></label></div>
 			<div class="min-h-0 flex-1 overflow-y-auto p-3">
-				{#if !hydrated || $appStore.phase === 'loading'}
+				{#if !hydrated || app.state.phase === 'loading'}
 					<div class="grid grid-cols-2 gap-2">{#each Array(6) as _}<div class="skeleton h-24 rounded-box"></div>{/each}</div>
 				{:else if visibleLuts.length}
 					<div class="grid grid-cols-2 gap-2" role="listbox" aria-label="LUT library">
 						{#each visibleLuts as lut}
-							<button class="group overflow-hidden rounded-box border bg-base-200 text-left" class:border-base-300={$appStore.selectedLutPath !== lut.path} class:border-primary={$appStore.selectedLutPath === lut.path} class:ring-1={$appStore.selectedLutPath === lut.path} class:ring-primary={$appStore.selectedLutPath === lut.path} role="option" aria-selected={$appStore.selectedLutPath === lut.path} onclick={() => appStore.selectLut(lut.path)}>
-								<div class="relative h-16 overflow-hidden bg-base-300">{#if $appStore.selectedImage}<img src={$appStore.selectedImage.previewUrl} alt="" class="size-full object-cover opacity-75 transition-transform duration-200 group-hover:scale-105" />{:else}<div class="grid size-full place-items-center text-[10px] text-base-content/25">Preview</div>{/if}{#if $appStore.selectedLutPath === lut.path}<span class="absolute right-1.5 top-1.5 grid size-4 place-items-center rounded-full bg-primary text-primary-content"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 8 3 3 7-7"/></svg></span>{/if}</div>
+							<button class="group overflow-hidden rounded-box border bg-base-200 text-left" class:border-base-300={app.state.selectedLutPath !== lut.path} class:border-primary={app.state.selectedLutPath === lut.path} class:ring-1={app.state.selectedLutPath === lut.path} class:ring-primary={app.state.selectedLutPath === lut.path} role="option" aria-selected={app.state.selectedLutPath === lut.path} onclick={() => app.selectLut(lut.path)}>
+								<div class="relative h-16 overflow-hidden bg-base-300">{#if app.state.selectedImage}<img src={app.state.selectedImage.previewUrl} alt="" class="size-full object-cover opacity-75 transition-transform duration-200 group-hover:scale-105" />{:else}<div class="grid size-full place-items-center text-[10px] text-base-content/25">Preview</div>{/if}{#if app.state.selectedLutPath === lut.path}<span class="absolute right-1.5 top-1.5 grid size-4 place-items-center rounded-full bg-primary text-primary-content"><svg viewBox="0 0 16 16" class="size-3" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 8 3 3 7-7"/></svg></span>{/if}</div>
 								<div class="px-2 py-2"><p class="truncate text-xs font-medium">{lutLabel(lut)}</p><p class="mt-0.5 text-[10px] text-base-content/40">{lut.size ? `${lut.size} point` : 'Cube LUT'}</p></div>
 							</button>
 						{/each}
@@ -150,9 +152,9 @@
 				{/if}
 			</div>
 			<div class="shrink-0 border-t border-base-300 p-3">
-				<div class="mb-2 flex items-center justify-between text-xs"><label for="lut-strength" class="font-medium">Strength</label><span class="font-mono tabular-nums text-base-content/50">{Math.round($appStore.intensity * 100)}%</span></div>
-				<input id="lut-strength" type="range" min="0" max="100" value={Math.round($appStore.intensity * 100)} class="range range-xs w-full" disabled={!activeLut} oninput={(event) => appStore.setIntensity(Number((event.currentTarget as HTMLInputElement).value) / 100)} />
-				<button class="btn btn-block mt-3" class:btn-primary={$canProcess} disabled={!$canProcess || $appStore.phase === 'processing'} onclick={exportImage}>{#if $appStore.phase === 'processing'}<span class="loading loading-spinner loading-sm"></span>{/if}{$appStore.phase === 'processing' ? 'Exporting…' : 'Export image'}</button>
+				<div class="mb-2 flex items-center justify-between text-xs"><label for="lut-strength" class="font-medium">Strength</label><span class="font-mono tabular-nums text-base-content/50">{Math.round(app.state.intensity * 100)}%</span></div>
+				<input id="lut-strength" type="range" min="0" max="100" value={Math.round(app.state.intensity * 100)} class="range range-xs w-full" disabled={!activeLut} oninput={(event) => app.setIntensity(Number((event.currentTarget as HTMLInputElement).value) / 100)} />
+				<button class="btn btn-block mt-3" class:btn-primary={app.canProcess} disabled={!app.canProcess || app.state.phase === 'processing'} onclick={exportImage}>{#if app.state.phase === 'processing'}<span class="loading loading-spinner loading-sm"></span>{/if}{app.state.phase === 'processing' ? 'Exporting…' : 'Export image'}</button>
 			</div>
 		</aside>
 	</div>
@@ -161,14 +163,14 @@
 <dialog bind:this={onboardingDialog} class="modal modal-middle">
 	<div class="modal-box max-w-md border border-base-300 bg-base-100 p-0">
 		<div class="border-b border-base-300 p-6"><div class="mb-5 grid size-10 place-items-center rounded-field bg-base-content text-sm font-black text-base-200">L</div><h2 class="text-xl font-semibold tracking-tight">Connect your LUT library</h2><p class="mt-2 text-sm leading-6 text-base-content/55">Choose the folder where you keep .cube LUT files. Luty scans it locally and remembers it for next time.</p></div>
-		<div class="p-6">{#if $appStore.error}<p class="mb-4 text-sm text-error">{$appStore.error}</p>{/if}<button class="btn btn-primary btn-block" onclick={() => chooseLutFolder(true)} disabled={$appStore.phase === 'loading'}>{#if $appStore.phase === 'loading'}<span class="loading loading-spinner loading-sm"></span>{/if}Choose LUT folder</button><form method="dialog" class="mt-2"><button class="btn btn-ghost btn-block">Set up later</button></form></div>
+		<div class="p-6">{#if app.state.error}<p class="mb-4 text-sm text-error">{app.state.error}</p>{/if}<button class="btn btn-primary btn-block" onclick={() => chooseLutFolder(true)} disabled={app.state.phase === 'loading'}>{#if app.state.phase === 'loading'}<span class="loading loading-spinner loading-sm"></span>{/if}Choose LUT folder</button><form method="dialog" class="mt-2"><button class="btn btn-ghost btn-block">Set up later</button></form></div>
 	</div><form method="dialog" class="modal-backdrop"><button aria-label="Close onboarding">close</button></form>
 </dialog>
 
 <dialog bind:this={settingsDialog} class="modal modal-middle">
 	<div class="modal-box max-w-lg border border-base-300 bg-base-100">
 		<div class="flex items-start justify-between gap-4"><div><h2 class="text-lg font-semibold">Settings</h2><p class="mt-1 text-sm text-base-content/50">Luty stores these preferences on this device.</p></div><form method="dialog"><button class="btn btn-ghost btn-square btn-sm" aria-label="Close settings">✕</button></form></div>
-		<div class="mt-6 rounded-box border border-base-300 bg-base-200 p-4"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><p class="text-sm font-medium">LUT library</p><p class="mt-1 truncate text-xs text-base-content/45">{$appStore.settings.lutDirectory ?? 'No folder selected'}</p></div><button class="btn btn-sm shrink-0" onclick={() => chooseLutFolder()}>Change</button></div><div class="mt-3 flex items-center gap-2 text-xs text-base-content/50"><span class="status" class:status-success={$supportedLuts.length > 0}></span>{$supportedLuts.length} supported LUTs found</div></div>
+		<div class="mt-6 rounded-box border border-base-300 bg-base-200 p-4"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><p class="text-sm font-medium">LUT library</p><p class="mt-1 truncate text-xs text-base-content/45">{app.state.settings.lutDirectory ?? 'No folder selected'}</p></div><button class="btn btn-sm shrink-0" onclick={() => chooseLutFolder()}>Change</button></div><div class="mt-3 flex items-center gap-2 text-xs text-base-content/50"><span class="status" class:status-success={app.supportedLuts.length > 0}></span>{app.supportedLuts.length} supported LUTs found</div></div>
 		<div class="modal-action"><form method="dialog"><button class="btn">Done</button></form></div>
 	</div><form method="dialog" class="modal-backdrop"><button aria-label="Close settings">close</button></form>
 </dialog>
